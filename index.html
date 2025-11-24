@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Take a break</title>
+<style>
+  :root{
+    --bg:#050505;
+    --fog: rgba(200,200,220,0.03);
+    --accent: #a9c1ff;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;color:#ececec}
+  canvas{display:block;position:fixed;left:0;top:0}
+  #scene{z-index:0}
+  #rain{z-index:1;pointer-events:none}
+  .ui{
+    position:fixed;left:20px;top:20px;z-index:4;display:flex;gap:10px;align-items:center;
+    backdrop-filter: blur(4px) saturate(0.7);
+    background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+    padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,0.04)
+  }
+  button{
+    -webkit-appearance:none;border:0;padding:8px 12px;border-radius:8px;background:rgba(255,255,255,0.04);color:inherit;cursor:pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.6);
+  }
+  #title{
+    position:fixed;z-index:3; inset:0; display:flex;align-items:center;justify-content:center; pointer-events:none;
+    text-align:center;
+  }
+  #title h1{
+    margin:0;font-size:clamp(28px,7vw,84px);letter-spacing:0.08em;text-transform:uppercase;
+    color: #ffffffaa; text-shadow: 0 12px 40px rgba(0,0,0,0.9), 0 1px 0 rgba(255,255,255,0.02);
+    mix-blend-mode:screen;
+    pointer-events:none;
+  }
+  /* cryptic subtext */
+  #subtitle{position:fixed;left:50%;transform:translateX(-50%);bottom:40px;z-index:3;color:#9ea7b6aa;font-size:14px}
+  /* custom eye cursor using data URL (SVG) */
+  :root { --cursor-svg: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='48' height='48' viewBox='0 0 48 48'%3E%3Cdefs%3E%3Cfilter id='g'%3E%3CfeDropShadow dx='0' dy='1' stdDeviation='1' flood-color='%23000000' flood-opacity='0.4'/%3E%3C/filter%3E%3C/defs%3E%3Ccircle cx='24' cy='24' r='22' fill='%23ffffff' opacity='0.05'/%3E%3Cellipse cx='24' cy='24' rx='18' ry='12' fill='%23ffffff' opacity='0.95'/%3E%3Ccircle cx='24' cy='24' r='7' fill='%23000000'/%3E%3Ccircle cx='24' cy='24' r='3' fill='%23ffffff' opacity='0.85'/%3E%3C/svg%3E") 24 24, auto; }
+  body, * { cursor: var(--cursor-svg); }
+  /* subtle vignette */
+  #vignette{position:fixed;inset:0;pointer-events:none;z-index:5;background:
+    radial-gradient(60% 60% at 50% 40%, rgba(0,0,0,0) 30%, rgba(0,0,0,0.25) 60%, rgba(0,0,0,0.6) 100%);}
+  /* small accessibility and help */
+  .hint{font-size:12px;color:#bfc7d0aa}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+<canvas id="rain"></canvas>
+
+<div id="title">
+  <h1>Take a break</h1>
+</div>
+
+<div id="subtitle">Close your eyes, breathe — listen if you dare.</div>
+
+<div class="ui">
+  <button id="play">Play dreamcore</button>
+  <button id="stop" disabled>Stop</button>
+  <div class="hint">Move mouse to explore — click canvas for focus</div>
+</div>
+
+<div id="vignette"></div>
+
+<script>
+/* Responsive canvas setup */
+const scene = document.getElementById('scene');
+const rain = document.getElementById('rain');
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+function resize(){
+  const w = Math.max(window.innerWidth, 300);
+  const h = Math.max(window.innerHeight, 300);
+  [scene, rain].forEach(c=>{
+    c.width = Math.round(w * dpr);
+    c.height = Math.round(h * dpr);
+    c.style.width = w + 'px';
+    c.style.height = h + 'px';
+    const ctx = c.getContext('2d');
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  });
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* Scene: draw layered trees, faces and bench */
+const sctx = scene.getContext('2d');
+
+function clearScene(){
+  sctx.clearRect(0,0,scene.width/dpr, scene.height/dpr);
+  // deep black background slightly textured
+  sctx.fillStyle = '#050507';
+  sctx.fillRect(0,0,scene.width/dpr, scene.height/dpr);
+}
+/* Simple perlin-ish noise for fog / texture (value noise) */
+function noise(w,h,scale){
+  const cols = Math.ceil(w/scale)+1;
+  const rows = Math.ceil(h/scale)+1;
+  const grid = [];
+  for(let y=0;y<rows;y++){grid[y]=[]; for(let x=0;x<cols;x++) grid[y][x]=Math.random();}
+  return function(nx,ny){
+    const gx = nx/scale, gy = ny/scale;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const xf = gx-x0, yf = gy-y0;
+    function lerp(a,b,t){return a+(b-a)*t;}
+    const a = grid[y0][x0], b = grid[y0][x0+1], c = grid[y0+1][x0], d = grid[y0+1][x0+1];
+    const e = lerp(a,b,xf), f = lerp(c,d,xf);
+    return lerp(e,f,yf);
+  };
+}
+
+const fogNoise = noise(window.innerWidth, window.innerHeight, 140);
+
+function drawFog(){
+  const w = scene.width/dpr, h = scene.height/dpr;
+  const image = sctx.createImageData(w, h);
+  for(let y=0;y<h;y+=4){
+    for(let x=0;x<w;x+=4){
+      const n = fogNoise(x,y);
+      const alpha = Math.max(0, (n-0.45))*0.06;
+      const idx = (y*w + x) * 4;
+      image.data[idx+0] = 160;
+      image.data[idx+1] = 165;
+      image.data[idx+2] = 180;
+      image.data[idx+3] = Math.round(alpha*255);
+      sctx.putImageData(image,0,0);
+    }
+  }
+}
+
+/* draw trees using recursive branches */
+function drawTree(x,y,scale,depth,seedOffset){
+  sctx.save();
+  sctx.translate(x,y);
+  sctx.rotate(-Math.PI/2);
+  sctx.scale(scale,scale);
+  function branch(len,thickness,angle,level){
+    sctx.lineWidth = thickness;
+    sctx.strokeStyle = `rgba(18,18,20,${0.5 + level*0.06})`;
+    sctx.beginPath();
+    sctx.moveTo(0,0);
+    sctx.lineTo(len,0);
+    sctx.stroke();
+    sctx.translate(len,0);
+    if(level <= 0) return;
+    const r1 = (Math.sin(level*0.7 + seedOffset) + 1)/2 * 0.6 + 0.2;
+    const r2 = (Math.cos(level*0.9 + seedOffset*1.3) + 1)/2 * 0.6 + 0.2;
+    sctx.save();
+    sctx.rotate(angle * r1);
+    branch(len * (0.75 + 0.06*Math.random()), thickness * 0.7, angle, level-1);
+    sctx.restore();
+    sctx.save();
+    sctx.rotate(-angle * r2);
+    branch(len * (0.68 + 0.06*Math.random()), thickness * 0.62, angle, level-1);
+    sctx.restore();
+    // small twigs
+    if(level<=1){
+      sctx.save();
+      sctx.rotate(0.6*(Math.random()-0.3));
+      sctx.strokeStyle = 'rgba(18,18,20,0.75)';
+      sctx.lineWidth = Math.max(0.8, thickness*0.3);
+      sctx.beginPath();
+      sctx.moveTo(0,0);
+      sctx.lineTo(len*0.6*(0.6+Math.random()*0.6),0);
+      sctx.stroke();
+      sctx.restore();
+    }
+    sctx.translate(-len,0);
+  }
+  branch(48, 8, 0.5, depth);
+  sctx.restore();
+}
+
+/* draw a face embedded in a trunk - subtle, eerie */
+function drawFace(x,y,scale,seed){
+  sctx.save();
+  sctx.translate(x,y);
+  sctx.scale(scale,scale);
+  sctx.rotate((Math.sin(seed*3.2)+1)*0.03);
+  // oval face, wood texture shading
+  const grd = sctx.createLinearGradient(-12,-20,12,20);
+  grd.addColorStop(0,'rgba(60,44,35,0.6)');
+  grd.addColorStop(0.5,'rgba(75,55,42,0.85)');
+  grd.addColorStop(1,'rgba(40,30,25,0.55)');
+  sctx.fillStyle = grd;
+  sctx.beginPath();
+  sctx.ellipse(0,0,14,18,0,0,Math.PI*2);
+  sctx.fill();
+
+  // eyes - hollow, soft glow
+  sctx.fillStyle = 'rgba(10,10,12,0.95)';
+  sctx.beginPath();
+  sctx.ellipse(-5,-2,3,5,0,0,Math.PI*2);
+  sctx.fill();
+  sctx.beginPath();
+  sctx.ellipse(5,-2,3,5,0,0,Math.PI*2);
+  sctx.fill();
+
+  // faint white gleam in pupils
+  sctx.fillStyle = 'rgba(200,220,255,0.06)';
+  sctx.beginPath(); sctx.ellipse(-4,-4,0.8,1.4,0,0,Math.PI*2); sctx.fill();
+  sctx.beginPath(); sctx.ellipse(6,-4,0.8,1.4,0,0,Math.PI*2); sctx.fill();
+
+  // mouth: small slit
+  sctx.strokeStyle = 'rgba(8,8,8,0.9)';
+  sctx.lineWidth = 1.6;
+  sctx.beginPath();
+  sctx.moveTo(-5,8);
+  sctx.quadraticCurveTo(0,10,5,8);
+  sctx.stroke();
+
+  // subtle cracks
+  sctx.strokeStyle = 'rgba(10,10,8,0.14)';
+  sctx.lineWidth = 0.6;
+  for(let i=0;i<6;i++){
+    sctx.beginPath();
+    const sx = -8 + Math.random()*16;
+    sctx.moveTo(sx, -8 + Math.random()*14);
+    sctx.lineTo(sx + (Math.random()-0.5)*12, 12 + Math.random()*6);
+    sctx.stroke();
+  }
+  sctx.restore();
+}
+
+/* bench in foreground */
+function drawBench(){
+  const w = scene.width/dpr, h = scene.height/dpr;
+  const cx = w*0.5, cy = h*0.7;
+  sctx.save();
+  sctx.translate(cx, cy);
+  sctx.scale(1,1);
+  // bench seat
+  sctx.fillStyle = 'rgba(10,10,12,0.9)';
+  sctx.fillRect(-140, -10, 280, 14);
+  // slats
+  sctx.fillStyle = 'rgba(18,18,20,0.95)';
+  for(let i=0;i<3;i++){
+    sctx.fillRect(-140, -10 + i*5, 280, 4);
+  }
+  // legs
+  sctx.fillStyle = 'rgba(12,12,14,0.95)';
+  sctx.fillRect(-110, 4, 10, 24);
+  sctx.fillRect(100, 4, 10, 24);
+  // backrest
+  sctx.fillRect(-140, -30, 280, 8);
+  // shadow
+  sctx.fillStyle = 'rgba(0,0,0,0.55)';
+  sctx.beginPath();
+  sctx.ellipse(0, 36, 160, 28,0,0,Math.PI*2);
+  sctx.fill();
+  sctx.restore();
+}
+
+/* create layered forest */
+function composeForest(){
+  clearScene();
+  const w = scene.width/dpr, h = scene.height/dpr;
+  // far foggy layer (silhouettes)
+  for(let i=0;i<12;i++){
+    const x = Math.random()*w;
+    const y = h*0.5 + Math.random()*h*0.35;
+    sctx.globalAlpha = 0.55;
+    drawTree(x, y, 0.8 + Math.random()*0.8, 3 + Math.floor(Math.random()*2), Math.random()*10);
+  }
+  // mid trees with faces sprinkled
+  for(let i=0;i<9;i++){
+    const x = Math.random()*w;
+    const y = h*0.55 + Math.random()*h*0.3;
+    sctx.globalAlpha = 0.95;
+    drawTree(x, y, 0.95 + Math.random()*0.9, 4 + Math.floor(Math.random()*2), Math.random()*20);
+    if(Math.random()<0.5){
+      drawFace(x - (Math.random()*40-20), y - (Math.random()*80-20), 0.6 + Math.random()*0.6, Math.random()*7);
+    }
+  }
+  // foreground bigger trees and faces
+  for(let i=0;i<6;i++){
+    const x = Math.random()*w;
+    const y = h*0.6 + Math.random()*h*0.25;
+    sctx.globalAlpha = 1;
+    drawTree(x, y, 1.1 + Math.random()*0.9, 5 + Math.floor(Math.random()*2), Math.random()*30);
+    if(Math.random()<0.55){
+      drawFace(x - (Math.random()*40-20), y - (Math.random()*80-20), 0.9 + Math.random()*0.9, Math.random()*7);
+    }
+  }
+  // bench in front
+  drawBench();
+  sctx.globalAlpha = 1;
+  // soft fog overlay
+  sctx.fillStyle = 'rgba(18,18,20,0.14)';
+  sctx.fillRect(0,0,w,h);
+}
+
+/* initial draw */
+composeForest();
+
+/* gently animate small swaying and occasional face glint */
+let sway = 0;
+function animateScene(ts){
+  sway += 0.002;
+  // slightly redraw scene occasionally to simulate movement
+  composeForest();
+  // glints: tiny translucent highlights on some faces
+  sctx.globalCompositeOperation = 'lighter';
+  for(let i=0;i<4;i++){
+    const x = Math.random()*scene.width/dpr;
+    const y = Math.random()*scene.height/dpr;
+    const r = Math.random()*30 + 6;
+    sctx.fillStyle = `rgba(160,180,255,${Math.random()*0.03})`;
+    sctx.beginPath();
+    sctx.ellipse(x, y, r, r*0.6, 0, 0, Math.PI*2);
+    sctx.fill();
+  }
+  sctx.globalCompositeOperation = 'source-over';
+  requestAnimationFrame(animateScene);
+}
+requestAnimationFrame(animateScene);
+
+/* Rain: cryptic letters falling */
+const rctx = rain.getContext('2d');
+const glyphs = Array.from("ᚠᚢᚦᚨᚱᚲᚷᚹᚺᛁᛃᛇ⟆⊹✦✶⟁▦▲◆♢❖⟟☥☩ᛞᛗᛚᛜАБВГДЕЖЗИЙК"); // mix of runic/cyrillic/glyphs
+const cols = Math.floor(window.innerWidth / 18);
+let drops = [];
+function initDrops(){
+  drops = [];
+  const w = rain.width/dpr, h = rain.height/dpr;
+  const colCount = Math.ceil(w/18);
+  for(let i=0;i<colCount;i++){
+    drops.push({x: i*18 + ((Math.random()-0.5)*8), y: Math.random()*-300, speed: 0.6 + Math.random()*1.4, size: 12+Math.random()*12, glyph: glyphs[Math.floor(Math.random()*glyphs.length)]});
+  }
+}
+initDrops();
+
+function drawRain(){
+  const w = rain.width/dpr, h = rain.height/dpr;
+  rctx.clearRect(0,0,w,h);
+  // faint smear background for letters
+  rctx.fillStyle = 'rgba(0,0,0,0)';
+  rctx.fillRect(0,0,w,h);
+  rctx.font = 'bold 18px serif';
+  for(let i=0;i<drops.length;i++){
+    const d = drops[i];
+    rctx.fillStyle = 'rgba(150,170,200,0.08)';
+    rctx.fillText(d.glyph, d.x, d.y);
+    rctx.fillStyle = 'rgba(200,230,255,0.22)';
+    rctx.fillText(d.glyph, d.x + Math.sin((d.y/80)+i)*6, d.y-2);
+    d.y += d.speed * (1 + (i%3)*0.25);
+    d.y += Math.sin(Date.now()/800 + i) * 0.3;
+    if(d.y > h + 30){
+      d.y = Math.random()*-300;
+      d.glyph = glyphs[Math.floor(Math.random()*glyphs.length)];
+      d.speed = 0.8 + Math.random()*1.6;
+    }
+  }
+  requestAnimationFrame(drawRain);
+}
+drawRain();
+
+/* Eye cursor follow: create slight lag of pupil movement in the data URL cursor not possible to animate dynamically,
+   so we also draw a ghost eye that follows mouse for more animation */
+const eyeLayer = document.createElement('canvas');
+eyeLayer.id = 'eyeLayer';
+eyeLayer.style.position = 'fixed';
+eyeLayer.style.left = '0'; eyeLayer.style.top='0'; eyeLayer.style.pointerEvents='none'; eyeLayer.style.zIndex=6;
+document.body.appendChild(eyeLayer);
+eyeLayer.width = window.innerWidth * dpr;
+eyeLayer.height = window.innerHeight * dpr;
+eyeLayer.style.width = window.innerWidth + 'px';
+eyeLayer.style.height = window.innerHeight + 'px';
+const ectx = eyeLayer.getContext('2d');
+ectx.setTransform(dpr,0,0,dpr,0,0);
+
+let mx = window.innerWidth/2, my = window.innerHeight/2, px = mx, py = my;
+window.addEventListener('mousemove', (ev)=>{ mx = ev.clientX; my = ev.clientY; });
+
+function drawEye(){
+  px += (mx - px) * 0.14;
+  py += (my - py) * 0.14;
+  ectx.clearRect(0,0,eyeLayer.width/dpr, eyeLayer.height/dpr);
+  const size = 36;
+  ectx.save();
+  ectx.translate(px,py);
+  // subtle glow
+  const g = ectx.createRadialGradient(0,0,size*0.6,0,0,size*1.6);
+  g.addColorStop(0,'rgba(200,220,255,0.16)');
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ectx.fillStyle = g; ectx.beginPath(); ectx.arc(0,0,size*1.2,0,Math.PI*2); ectx.fill();
+  // white sclera
+  ectx.fillStyle = 'rgba(255,255,255,0.94)';
+  ectx.beginPath();
+  ectx.ellipse(0,0,size, size*0.6, 0, 0, Math.PI*2);
+  ectx.fill();
+  // pupil center toward mouse offset slightly
+  const vx = (mx - px)*0.08, vy = (my - py)*0.08;
+  ectx.fillStyle = 'rgba(8,8,10,0.98)';
+  ectx.beginPath();
+  ectx.ellipse(vx, vy, size*0.38, size*0.38, 0, 0, Math.PI*2);
+  ectx.fill();
+  // tiny spec
+  ectx.fillStyle = 'rgba(255,255,255,0.9)';
+  ectx.beginPath(); ectx.arc(vx - 6, vy - 6, 3, 0, Math.PI*2); ectx.fill();
+  ectx.restore();
+  requestAnimationFrame(drawEye);
+}
+drawEye();
+
+/* AUDIO: small dreamcore ambient pad + light bell noise
+   Uses Web Audio; user must click Play to start. */
+let audioCtx = null;
+let master = null, padNode = null, lfo = null, noiseNode = null, bell = null;
+
+function startAudio(){
+  if(audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  master = audioCtx.createGain(); master.gain.value = 0.72; master.connect(audioCtx.destination);
+
+  // pad: 2 detuned sawtooth oscillators mixed, through lowpass and reverb-ish delays
+  const o1 = audioCtx.createOscillator(); o1.type = 'sawtooth'; o1.frequency.value = 80;
+  const o2 = audioCtx.createOscillator(); o2.type = 'sawtooth'; o2.frequency.value = 80 * 1.003;
+  const g1 = audioCtx.createGain(); g1.gain.value = 0.45;
+  const g2 = audioCtx.createGain(); g2.gain.value = 0.45;
+  o1.connect(g1); o2.connect(g2);
+
+  const padMix = audioCtx.createGain(); padMix.gain.value = 0.9;
+  g1.connect(padMix); g2.connect(padMix);
+
+  // filter
+  const lp = audioCtx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+  padMix.connect(lp);
+
+  // slow LFO to modulate filter for dreamy movement
+  lfo = audioCtx.createOscillator(); lfo.type = 'sine'; lfo.frequency.value = 0.05;
+  const lfoGain = audioCtx.createGain(); lfoGain.gain.value = 450;
+  lfo.connect(lfoGain);
+  lfoGain.connect(lp.frequency);
+
+  // gentle chorus: duplicate with slight detune via delay
+  const delay = audioCtx.createDelay(); delay.delayTime.value = 0.25;
+  const fb = audioCtx.createGain(); fb.gain.value = 0.22;
+  delay.connect(fb); fb.connect(delay);
+  lp.connect(delay);
+
+  // mix pad
+  const padOut = audioCtx.createGain(); padOut.gain.value = 0.8;
+  lp.connect(padOut); delay.connect(padOut);
+
+  // small bell / metallic texture: noise burst filtered into tone
+  // noise
+  const bufferSize = 2 * audioCtx.sampleRate;
+  const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * 0.6;
+  noiseNode = audioCtx.createBufferSource(); noiseNode.buffer = noiseBuffer; noiseNode.loop = true;
+  const noiseFilter = audioCtx.createBiquadFilter(); noiseFilter.type = 'bandpass'; noiseFilter.frequency.value = 1500;
+  noiseNode.connect(noiseFilter);
+
+  // subtle bell oscillator modulated by noise
+  bell = audioCtx.createOscillator(); bell.type = 'sine'; bell.frequency.value = 440;
+  const bellGain = audioCtx.createGain(); bellGain.gain.value = 0.0001;
+  bell.connect(bellGain);
+
+  const bellMix = audioCtx.createGain(); bellMix.gain.value = 0.2;
+  noiseFilter.connect(bellMix);
+  bellGain.connect(bellMix);
+
+  // master chain: mix pad and bell -> small final reverb via feedback delay
+  const finalMix = audioCtx.createGain(); finalMix.gain.value = 1.0;
+  padOut.connect(finalMix);
+  bellMix.connect(finalMix);
+
+  const finalDelay = audioCtx.createDelay(); finalDelay.delayTime.value = 0.7;
+  const finalFB = audioCtx.createGain(); finalFB.gain.value = 0.28;
+  finalMix.connect(finalDelay); finalDelay.connect(finalFB); finalFB.connect(finalDelay);
+  finalDelay.connect(master);
+  finalMix.connect(master);
+
+  // slowly fade in oscillators
+  o1.start(); o2.start(); lfo.start(); noiseNode.start(); bell.start();
+  // small pads amplitude envelope
+  g1.gain.setValueAtTime(0.001, audioCtx.currentTime);
+  g1.gain.exponentialRampToValueAtTime(0.45, audioCtx.currentTime + 6);
+  g2.gain.setValueAtTime(0.001, audioCtx.currentTime);
+  g2.gain.exponentialRampToValueAtTime(0.43, audioCtx.currentTime + 6);
+
+  // periodic bell plucks
+  function scheduleBells(){
+    if(!audioCtx) return;
+    const t0 = audioCtx.currentTime + 0.2;
+    for(let i=0;i<8;i++){
+      const at = t0 + i * 4.2 + (Math.random()*2 - 1);
+      const freq = 220 + Math.random()*600;
+      bell.frequency.setValueAtTime(freq, at);
+      // tiny pluck
+      bellGain.gain.cancelScheduledValues(at);
+      bellGain.gain.setValueAtTime(0.0001, at);
+      bellGain.gain.exponentialRampToValueAtTime(0.06 + Math.random()*0.05, at + 0.02);
+      bellGain.gain.exponentialRampToValueAtTime(0.0001, at + 3.2 + Math.random()*1.5);
+    }
+    setTimeout(scheduleBells, 12000 + Math.random()*8000);
+  }
+  scheduleBells();
+
+  // keep references for stopping
+  padNode = {o1,o2,g1,g2,lp,delay,noiseNode,noiseFilter,bell,bellGain};
+}
+
+/* stop audio */
+function stopAudio(){
+  if(!audioCtx) return;
+  try{
+    audioCtx.close();
+  }catch(e){}
+  audioCtx = null;
+  padNode = null;
+}
+
+/* UI controls */
+const playBtn = document.getElementById('play');
+const stopBtn = document.getElementById('stop');
+playBtn.addEventListener('click', ()=>{
+  startAudio();
+  playBtn.disabled = true;
+  stopBtn.disabled = false;
+});
+stopBtn.addEventListener('click', ()=>{
+  stopAudio();
+  playBtn.disabled = false;
+  stopBtn.disabled = true;
+});
+
+/* accessibility: allow clicking scene to center focus */
+scene.addEventListener('click', ()=>{ window.focus(); });
+
+/* re-init drops on resize */
+window.addEventListener('resize', ()=>{
+  eyeLayer.width = window.innerWidth * dpr;
+  eyeLayer.height = window.innerHeight * dpr;
+  eyeLayer.style.width = window.innerWidth + 'px';
+  eyeLayer.style.height = window.innerHeight + 'px';
+  ectx.setTransform(dpr,0,0,dpr,0,0);
+  initDrops();
+});
+
+</script>
+</body>
+</html>
